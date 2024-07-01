@@ -80,6 +80,7 @@ routes = [
   CarTestRoute("2c4292a5cd10536c|2021-08-19--21-32-15", HONDA.HONDA_FREED),
   CarTestRoute("03be5f2fd5c508d1|2020-04-19--18-44-15", HONDA.HONDA_HRV),
   CarTestRoute("320098ff6c5e4730|2023-04-13--17-47-46", HONDA.HONDA_HRV_3G),
+  CarTestRoute("147613502316e718/00000001--dd141a3140", HONDA.HONDA_HRV_3G),  # Brazilian model
   CarTestRoute("917b074700869333|2021-05-24--20-40-20", HONDA.ACURA_ILX),
   CarTestRoute("08a3deb07573f157|2020-03-06--16-11-19", HONDA.HONDA_ACCORD),  # 1.5T
   CarTestRoute("1da5847ac2488106|2021-05-24--19-31-50", HONDA.HONDA_ACCORD),  # 2.0T
@@ -224,7 +225,6 @@ routes = [
   CarTestRoute("cd9cff4b0b26c435|2021-05-13--15-12-39", TOYOTA.TOYOTA_CHR),
   CarTestRoute("57858ede0369a261|2021-05-18--20-34-20", TOYOTA.TOYOTA_CHR),  # hybrid
   CarTestRoute("ea8fbe72b96a185c|2023-02-08--15-11-46", TOYOTA.TOYOTA_CHR_TSS2),
-  CarTestRoute("ea8fbe72b96a185c|2023-02-22--09-20-34", TOYOTA.TOYOTA_CHR_TSS2),  # openpilot longitudinal, with smartDSU
   CarTestRoute("6719965b0e1d1737|2023-02-09--22-44-05", TOYOTA.TOYOTA_CHR_TSS2),  # hybrid
   CarTestRoute("6719965b0e1d1737|2023-08-29--06-40-05", TOYOTA.TOYOTA_CHR_TSS2),  # hybrid, openpilot longitudinal, radar disabled
   CarTestRoute("14623aae37e549f3|2021-10-24--01-20-49", TOYOTA.TOYOTA_PRIUS_V),
