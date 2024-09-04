@@ -1,4 +1,4 @@
-#!/usr/bin/bash
+#!/usr/bin/env bash
 
 set -e
 
@@ -23,7 +23,7 @@ rm -rf /data/safe_staging/* || true
 
 CONTINUE_PATH="/data/continue.sh"
 tee $CONTINUE_PATH << EOF
-#!/usr/bin/bash
+#!/usr/bin/env bash
 
 sudo abctl --set_success
 
@@ -70,6 +70,7 @@ safe_checkout() {
   git checkout $GIT_COMMIT
   git clean -xdff
   git submodule sync
+  git submodule foreach --recursive "git reset --hard && git clean -xdff"
   git submodule update --init --recursive
   git submodule foreach --recursive "git reset --hard && git clean -xdff"
 
@@ -95,6 +96,7 @@ unsafe_checkout() {
   git reset --hard $GIT_COMMIT
   git clean -df
   git submodule sync
+  git submodule foreach --recursive "git reset --hard && git clean -df"
   git submodule update --init --recursive
   git submodule foreach --recursive "git reset --hard && git clean -df"
 

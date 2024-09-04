@@ -6,9 +6,11 @@ import argparse
 import numpy as np
 import multiprocessing
 import time
+import signal
+
 
 import cereal.messaging as messaging
-from cereal.visionipc import VisionIpcServer, VisionStreamType
+from msgq.visionipc import VisionIpcServer, VisionStreamType
 
 V4L2_BUF_FLAG_KEYFRAME = 8
 
@@ -18,8 +20,8 @@ V4L2_BUF_FLAG_KEYFRAME = 8
 
 ENCODE_SOCKETS = {
   VisionStreamType.VISION_STREAM_ROAD: "roadEncodeData",
-  VisionStreamType.VISION_STREAM_WIDE_ROAD: "wideRoadEncodeData",
   VisionStreamType.VISION_STREAM_DRIVER: "driverEncodeData",
+  VisionStreamType.VISION_STREAM_WIDE_ROAD: "wideRoadEncodeData",
 }
 
 def decoder(addr, vipc_server, vst, nvidia, W, H, debug=False):
@@ -41,7 +43,7 @@ def decoder(addr, vipc_server, vst, nvidia, W, H, debug=False):
     codec = av.CodecContext.create("hevc", "r")
 
   os.environ["ZMQ"] = "1"
-  messaging.context = messaging.Context()
+  messaging.reset_context()
   sock = messaging.sub_sock(sock_name, None, addr=addr, conflate=False)
   cnt = 0
   last_idx = -1
@@ -108,12 +110,12 @@ class CompressedVipc:
   def __init__(self, addr, vision_streams, nvidia=False, debug=False):
     print("getting frame sizes")
     os.environ["ZMQ"] = "1"
-    messaging.context = messaging.Context()
+    messaging.reset_context()
     sm = messaging.SubMaster([ENCODE_SOCKETS[s] for s in vision_streams], addr=addr)
     while min(sm.recv_frame.values()) == 0:
       sm.update(100)
     os.environ.pop("ZMQ")
-    messaging.context = messaging.Context()
+    messaging.reset_context()
 
     self.vipc_server = VisionIpcServer("camerad")
     for vst in vision_streams:
@@ -147,10 +149,14 @@ if __name__ == "__main__":
 
   vision_streams = [
     VisionStreamType.VISION_STREAM_ROAD,
-    VisionStreamType.VISION_STREAM_WIDE_ROAD,
     VisionStreamType.VISION_STREAM_DRIVER,
+    VisionStreamType.VISION_STREAM_WIDE_ROAD,
   ]
 
   vsts = [vision_streams[int(x)] for x in args.cams.split(",")]
   cvipc = CompressedVipc(args.addr, vsts, args.nvidia, debug=(not args.silent))
+
+  # register exit handler
+  signal.signal(signal.SIGINT, lambda sig, frame: cvipc.kill())
+
   cvipc.join()

@@ -6,7 +6,7 @@ import json
 import heapq
 import signal
 import platform
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 from dataclasses import dataclass, field
 from typing import Any
 from collections.abc import Callable, Iterable
@@ -16,14 +16,16 @@ import capnp
 import cereal.messaging as messaging
 from cereal import car
 from cereal.services import SERVICE_LIST
-from cereal.visionipc import VisionIpcServer, get_endpoint_name as vipc_get_endpoint_name
+from msgq.visionipc import VisionIpcServer, get_endpoint_name as vipc_get_endpoint_name
+from opendbc.car import structs
+from opendbc.car.car_helpers import get_car, interfaces
 from openpilot.common.params import Params
 from openpilot.common.prefix import OpenpilotPrefix
 from openpilot.common.timeout import Timeout
 from openpilot.common.realtime import DT_CTRL
 from panda.python import ALTERNATIVE_EXPERIENCE
-from openpilot.selfdrive.car.car_helpers import get_car, interfaces
-from openpilot.selfdrive.manager.process_config import managed_processes
+from openpilot.selfdrive.car.card import can_comm_callbacks, convert_to_capnp
+from openpilot.system.manager.process_config import managed_processes
 from openpilot.selfdrive.test.process_replay.vision_meta import meta_from_camera_state, available_streams
 from openpilot.selfdrive.test.process_replay.migration import migrate_all
 from openpilot.selfdrive.test.process_replay.capture import ProcessOutputCapture
@@ -317,12 +319,12 @@ class ProcessContainer:
     return output_msgs
 
 
-def controlsd_fingerprint_callback(rc, pm, msgs, fingerprint):
+def card_fingerprint_callback(rc, pm, msgs, fingerprint):
   print("start fingerprinting")
   params = Params()
   canmsgs = [msg for msg in msgs if msg.which() == "can"][:300]
 
-  # controlsd expects one arbitrary can and pandaState
+  # card expects one arbitrary can and pandaState
   rc.send_sync(pm, "can", messaging.new_message("can", 1))
   pm.send("pandaStates", messaging.new_message("pandaStates", 1))
   rc.send_sync(pm, "can", messaging.new_message("can", 1))
@@ -335,33 +337,48 @@ def controlsd_fingerprint_callback(rc, pm, msgs, fingerprint):
 
     m = canmsgs.pop(0)
     rc.send_sync(pm, "can", m.as_builder().to_bytes())
-    rc.wait_for_next_recv(False)
+    rc.wait_for_next_recv(True)
 
 
 def get_car_params_callback(rc, pm, msgs, fingerprint):
   params = Params()
   if fingerprint:
-    CarInterface, _, _ = interfaces[fingerprint]
+    CarInterface, _, _, _ = interfaces[fingerprint]
     CP = CarInterface.get_non_essential_params(fingerprint)
   else:
     can = DummySocket()
     sendcan = DummySocket()
 
     canmsgs = [msg for msg in msgs if msg.which() == "can"]
-    has_cached_cp = params.get("CarParamsCache") is not None
+    cached_params_raw = params.get("CarParamsCache")
+    has_cached_cp = cached_params_raw is not None
     assert len(canmsgs) != 0, "CAN messages are required for fingerprinting"
     assert os.environ.get("SKIP_FW_QUERY", False) or has_cached_cp, \
             "CarParamsCache is required for fingerprinting. Make sure to keep carParams msgs in the logs."
 
     for m in canmsgs[:300]:
       can.send(m.as_builder().to_bytes())
-    _, CP = get_car(can, sendcan, Params().get_bool("ExperimentalLongitudinalEnabled"))
-  params.put("CarParams", CP.to_bytes())
-  return CP
+    can_callbacks = can_comm_callbacks(can, sendcan)
+
+    cached_params = None
+    if has_cached_cp:
+      with car.CarParams.from_bytes(cached_params_raw) as _cached_params:
+        cached_params = structs.CarParams(carName=_cached_params.carName, carFw=_cached_params.carFw, carVin=_cached_params.carVin)
+
+    CP = get_car(*can_callbacks, lambda obd: None, Params().get_bool("ExperimentalLongitudinalEnabled"), cached_params=cached_params).CP
+
+    if not params.get_bool("DisengageOnAccelerator"):
+      CP.alternativeExperience |= ALTERNATIVE_EXPERIENCE.DISABLE_DISENGAGE_ON_GAS
+
+  params.put("CarParams", convert_to_capnp(CP).to_bytes())
 
 
 def controlsd_rcv_callback(msg, cfg, frame):
-  # no sendcan until controlsd is initialized
+  return (frame - 1) == 0 or msg.which() == 'carState'
+
+
+def card_rcv_callback(msg, cfg, frame):
+  # no sendcan until card is initialized
   if msg.which() != "can":
     return False
 
@@ -382,7 +399,7 @@ def calibration_rcv_callback(msg, cfg, frame):
 
 def torqued_rcv_callback(msg, cfg, frame):
   # should_recv always true to increment frame
-  return (frame - 1) == 0 or msg.which() == 'liveLocationKalman'
+  return (frame - 1) == 0 or msg.which() == 'livePose'
 
 
 def dmonitoringmodeld_rcv_callback(msg, cfg, frame):
@@ -436,18 +453,10 @@ class FrequencyBasedRcvCallback:
 
 
 def controlsd_config_callback(params, cfg, lr):
-  controlsState = None
-  initialized = False
-  for msg in lr:
-    if msg.which() == "controlsState":
-      controlsState = msg.controlsState
-      if initialized:
-        break
-    elif msg.which() == "onroadEvents":
-      initialized = car.CarEvent.EventName.controlsInitializing not in [e.name for e in msg.onroadEvents]
+  ublox = params.get_bool("UbloxAvailable")
+  sub_keys = ({"gpsLocation", } if ublox else {"gpsLocationExternal", })
 
-  assert controlsState is not None and initialized, "controlsState never initialized"
-  params.put("ReplayControlsState", controlsState.as_builder().to_bytes())
+  cfg.pubs = set(cfg.pubs) - sub_keys
 
 
 def locationd_config_pubsub_callback(params, cfg, lr):
@@ -461,16 +470,27 @@ CONFIGS = [
   ProcessConfig(
     proc_name="controlsd",
     pubs=[
-      "can", "deviceState", "pandaStates", "peripheralState", "liveCalibration", "driverMonitoringState",
-      "longitudinalPlan", "liveLocationKalman", "liveParameters", "radarState",
+      "carState", "deviceState", "pandaStates", "peripheralState", "liveCalibration", "driverMonitoringState",
+      "longitudinalPlan", "livePose", "liveParameters", "radarState",
       "modelV2", "driverCameraState", "roadCameraState", "wideRoadCameraState", "managerState",
-      "testJoystick", "liveTorqueParameters", "accelerometer", "gyroscope"
+      "testJoystick", "liveTorqueParameters", "accelerometer", "gyroscope", "carOutput",
+      "gpsLocationExternal", "gpsLocation",
     ],
-    subs=["controlsState", "carState", "carControl", "sendcan", "onroadEvents", "carParams"],
-    ignore=["logMonoTime", "controlsState.startMonoTime", "controlsState.cumLagMs"],
+    subs=["selfdriveState", "controlsState", "carControl", "onroadEvents"],
+    ignore=["logMonoTime", "controlsState.cumLagMs"],
     config_callback=controlsd_config_callback,
-    init_callback=controlsd_fingerprint_callback,
+    init_callback=get_car_params_callback,
     should_recv_callback=controlsd_rcv_callback,
+    tolerance=NUMPY_TOLERANCE,
+    processing_time=0.004,
+  ),
+  ProcessConfig(
+    proc_name="card",
+    pubs=["pandaStates", "carControl", "onroadEvents", "can"],
+    subs=["sendcan", "carState", "carParams", "carOutput"],
+    ignore=["logMonoTime", "carState.cumLagMs"],
+    init_callback=card_fingerprint_callback,
+    should_recv_callback=card_rcv_callback,
     tolerance=NUMPY_TOLERANCE,
     processing_time=0.004,
     main_pub="can",
@@ -486,8 +506,8 @@ CONFIGS = [
   ),
   ProcessConfig(
     proc_name="plannerd",
-    pubs=["modelV2", "carControl", "carState", "controlsState", "radarState"],
-    subs=["longitudinalPlan", "uiPlan"],
+    pubs=["modelV2", "carControl", "carState", "controlsState", "radarState", "selfdriveState"],
+    subs=["longitudinalPlan"],
     ignore=["logMonoTime", "longitudinalPlan.processingDelay", "longitudinalPlan.solverExecutionTime"],
     init_callback=get_car_params_callback,
     should_recv_callback=FrequencyBasedRcvCallback("modelV2"),
@@ -502,7 +522,7 @@ CONFIGS = [
   ),
   ProcessConfig(
     proc_name="dmonitoringd",
-    pubs=["driverStateV2", "liveCalibration", "carState", "modelV2", "controlsState"],
+    pubs=["driverStateV2", "liveCalibration", "carState", "modelV2", "selfdriveState"],
     subs=["driverMonitoringState"],
     ignore=["logMonoTime"],
     should_recv_callback=FrequencyBasedRcvCallback("driverStateV2"),
@@ -514,18 +534,18 @@ CONFIGS = [
       "cameraOdometry", "accelerometer", "gyroscope", "gpsLocationExternal",
       "liveCalibration", "carState", "gpsLocation"
     ],
-    subs=["liveLocationKalman"],
+    subs=["livePose"],
     ignore=["logMonoTime"],
     config_callback=locationd_config_pubsub_callback,
     tolerance=NUMPY_TOLERANCE,
   ),
   ProcessConfig(
     proc_name="paramsd",
-    pubs=["liveLocationKalman", "carState"],
+    pubs=["livePose", "liveCalibration", "carState"],
     subs=["liveParameters"],
     ignore=["logMonoTime"],
     init_callback=get_car_params_callback,
-    should_recv_callback=FrequencyBasedRcvCallback("liveLocationKalman"),
+    should_recv_callback=FrequencyBasedRcvCallback("livePose"),
     tolerance=NUMPY_TOLERANCE,
     processing_time=0.004,
   ),
@@ -537,7 +557,7 @@ CONFIGS = [
   ),
   ProcessConfig(
     proc_name="torqued",
-    pubs=["liveLocationKalman", "carState", "carControl"],
+    pubs=["livePose", "liveCalibration", "carState", "carControl", "carOutput"],
     subs=["liveTorqueParameters"],
     ignore=["logMonoTime"],
     init_callback=get_car_params_callback,
@@ -547,7 +567,7 @@ CONFIGS = [
   ProcessConfig(
     proc_name="modeld",
     pubs=["deviceState", "roadCameraState", "wideRoadCameraState", "liveCalibration", "driverMonitoringState"],
-    subs=["modelV2", "cameraOdometry"],
+    subs=["modelV2", "drivingModelData", "cameraOdometry"],
     ignore=["logMonoTime", "modelV2.frameDropPerc", "modelV2.modelExecutionTime"],
     should_recv_callback=ModeldCameraSyncRcvCallback(),
     tolerance=NUMPY_TOLERANCE,
@@ -790,11 +810,30 @@ def check_openpilot_enabled(msgs: LogIterable) -> bool:
     if msg.which() == "carParams":
       if msg.carParams.notCar:
         return True
-    elif msg.which() == "controlsState":
-      if msg.controlsState.active:
+    elif msg.which() == "selfdriveState":
+      if msg.selfdriveState.active:
         cur_enabled_count += 1
       else:
         cur_enabled_count = 0
       max_enabled_count = max(max_enabled_count, cur_enabled_count)
 
   return max_enabled_count > int(10. / DT_CTRL)
+
+
+def check_most_messages_valid(msgs: LogIterable, threshold: float = 0.9) -> bool:
+  relevant_services = {sock for cfg in CONFIGS for sock in cfg.subs}
+  msgs_counts = Counter(msg.which() for msg in msgs)
+  msgs_valid_counts = Counter(msg.which() for msg in msgs if msg.valid)
+
+  most_valid_for_service = {}
+  for msg_type in msgs_counts.keys():
+    if msg_type not in relevant_services:
+      continue
+
+    valid_share = msgs_valid_counts.get(msg_type, 0) / msgs_counts[msg_type]
+    ok = valid_share >= threshold
+    if not ok:
+      print(f"WARNING: Service {msg_type} has {valid_share * 100:.2f}% valid messages, which is below threshold of {threshold * 100:.2f}%")
+    most_valid_for_service[msg_type] = ok
+
+  return all(most_valid_for_service.values())

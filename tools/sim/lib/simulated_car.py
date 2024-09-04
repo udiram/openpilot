@@ -3,7 +3,7 @@ import cereal.messaging as messaging
 from opendbc.can.packer import CANPacker
 from opendbc.can.parser import CANParser
 from openpilot.common.params import Params
-from openpilot.selfdrive.boardd.boardd_api_impl import can_list_to_can_capnp
+from openpilot.selfdrive.pandad.pandad_api_impl import can_list_to_can_capnp
 from openpilot.tools.sim.lib.common import SimulatorState
 from panda.python import Panda
 
@@ -14,7 +14,7 @@ class SimulatedCar:
 
   def __init__(self):
     self.pm = messaging.PubMaster(['can', 'pandaStates'])
-    self.sm = messaging.SubMaster(['carControl', 'controlsState', 'carParams'])
+    self.sm = messaging.SubMaster(['carControl', 'controlsState', 'carParams', 'selfdriveState'])
     self.cp = self.get_car_can_parser()
     self.idx = 0
     self.params = Params()
@@ -23,8 +23,7 @@ class SimulatedCar:
   @staticmethod
   def get_car_can_parser():
     dbc_f = 'honda_civic_ex_2022_can_generated'
-    checks = [
-    ]
+    checks = []
     return CANParser(dbc_f, checks, 0)
 
   def send_can_messages(self, simulator_state: SimulatorState):

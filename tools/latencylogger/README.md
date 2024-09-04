@@ -5,7 +5,7 @@ LatencyLogger is a tool to track the time from first pixel to actuation. Timesta
 ## Usage
 
 ```
-$ python latency_logger.py -h
+$ python3 latency_logger.py -h
 usage: latency_logger.py [-h] [--relative] [--demo] [--plot] [route_or_segment_name]
 
 A tool for analyzing openpilot's end-to-end latency
@@ -76,7 +76,7 @@ Frame ID: 1202
     Events updated                                       111.183541
     sendcan published                                    112.981692
     controlsState published                              113.731994
-  boardd
+  pandad
     sending sendcan to panda: 250027001751393037323631   81.928119
     sendcan sent to panda: 250027001751393037323631      82.164834
     sending sendcan to panda: 250027001751393037323631   93.569986

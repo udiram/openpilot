@@ -1,7 +1,3 @@
-#!/usr/bin/env python3
-
-import unittest
-
 from parameterized import parameterized
 
 from openpilot.selfdrive.test.process_replay.regen import regen_segment, DummyFrameReader
@@ -19,18 +15,18 @@ TESTED_SEGMENTS = [
 
 
 def ci_setup_data_readers(route, sidx):
-  lr = LogReader(get_url(route, sidx, "rlog"))
+  lr = LogReader(get_url(route, sidx, "rlog.bz2"))
   frs = {
-    'roadCameraState': FrameReader(get_url(route, sidx, "fcamera")),
+    'roadCameraState': FrameReader(get_url(route, sidx, "fcamera.hevc")),
     'driverCameraState': DummyFrameReader.zero_dcamera()
   }
   if next((True for m in lr if m.which() == "wideRoadCameraState"), False):
-    frs["wideRoadCameraState"] = FrameReader(get_url(route, sidx, "ecamera"))
+    frs["wideRoadCameraState"] = FrameReader(get_url(route, sidx, "ecamera.hevc"))
 
   return lr, frs
 
 
-class TestRegen(unittest.TestCase):
+class TestRegen:
   @parameterized.expand(TESTED_SEGMENTS)
   def test_engaged(self, case_name, segment):
     route, sidx = segment.rsplit("--", 1)
@@ -38,8 +34,4 @@ class TestRegen(unittest.TestCase):
     output_logs = regen_segment(lr, frs, disable_tqdm=True)
 
     engaged = check_openpilot_enabled(output_logs)
-    self.assertTrue(engaged, f"openpilot not engaged in {case_name}")
-
-
-if __name__=='__main__':
-  unittest.main()
+    assert engaged, f"openpilot not engaged in {case_name}"
